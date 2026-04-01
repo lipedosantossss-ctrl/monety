@@ -139,7 +139,7 @@ export default function ProfilePage() {
 
           <div className="grid grid-cols-2 gap-3">
             <a
-              href="https://t.me/+qasEE92ROa5iOTYx"
+              href="https://t.me/+0dR9WSfhCTZkMTVh"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center justify-center gap-2 bg-gradient-to-r from-[#22c55e] to-[#16a34a] text-white py-3 rounded-lg font-semibold text-sm shadow-lg shadow-[#22c55e]/20"
@@ -148,7 +148,7 @@ export default function ProfilePage() {
               Grupo Oficial
             </a>
             <a
-              href="https://t.me/+5598981275486"
+              href="https://t.me/+5598981834876"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center justify-center gap-2 bg-[#1a1a1a] border border-[#2a2a2a] text-white py-3 rounded-lg font-semibold text-sm"
