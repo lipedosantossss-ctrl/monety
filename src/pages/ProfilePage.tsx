@@ -253,7 +253,6 @@ export default function ProfilePage() {
             </a>
           </div>
 
-          {/* NOVO BOTÃO DE PLANO DE CARREIRA */}
           <Card 
             className="bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a] border-[#22c55e]/20 cursor-pointer hover:border-[#22c55e]/50 transition-all mt-4"
             onClick={() => setActiveSection('team-bonus')}
@@ -321,7 +320,6 @@ export default function ProfilePage() {
     </div>
   );
 
-  // ABA DO PLANO DE CARREIRA
   const renderTeamBonus = () => {
     const collected = user?.collectedBonuses || [];
     const maxGoal = BONUS_TIERS[BONUS_TIERS.length - 1].goal;
