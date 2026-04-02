@@ -1,5 +1,5 @@
 // ========================================
-// NETLIFY FUNCTION: Webhook Pagamentos Final (CORRIGIDO)
+// NETLIFY FUNCTION: Webhook Pagamentos (ATUALIZADO - PLANO DE CARREIRA E STATUS)
 // ========================================
 const admin = require('firebase-admin');
 
@@ -16,135 +16,167 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 exports.handler = async (event) => {
-  if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Método não permitido' };
+  // Configuração de Headers para evitar bloqueios
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Content-Type': 'application/json'
+  };
+
+  if (event.httpMethod !== 'POST') {
+    return { statusCode: 405, headers, body: JSON.stringify({ error: 'Método não permitido' }) };
+  }
 
   try {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
     
-    // 1. Identificar a Transação
-    const transactionId = body.reference || body.id || (event.queryStringParameters ? event.queryStringParameters.id : null);
-    if (!transactionId) return { statusCode: 400, body: JSON.stringify({ error: 'ID ausente' }) };
+    console.log("=== RECEBENDO WEBHOOK EVOPAY ===", JSON.stringify(body));
+
+    // 1. Identificar a Transação (Suporta EvoPay)
+    const transactionId = body.reference || body.id || body.txid || (event.queryStringParameters ? event.queryStringParameters.id : null);
+    if (!transactionId) {
+      console.error("ID da transação ausente no Webhook.");
+      return { statusCode: 400, headers, body: JSON.stringify({ error: 'ID ausente' }) };
+    }
 
     // 2. Verificar Status de Pagamento
-    const statusCeto = String(body.status).toUpperCase();
-    const isPaid = statusCeto === 'PAID' || statusCeto === 'COMPLETED' || body.success === true;
+    // A EvoPay geralmente envia status como "PAID" ou "COMPLETED".
+    const statusEvopay = String(body.status).toUpperCase();
+    const isPaid = statusEvopay === 'PAID' || statusEvopay === 'COMPLETED' || body.success === true;
 
-    if (!isPaid) return { statusCode: 200, body: JSON.stringify({ message: 'Aguardando pagamento' }) };
+    if (!isPaid) {
+      console.log(`Pagamento ${transactionId} ainda não foi pago. Status recebido: ${statusEvopay}`);
+      return { statusCode: 200, headers, body: JSON.stringify({ message: 'Aguardando pagamento ou status ignorado' }) };
+    }
 
     // 3. Buscar Depósito Global
     const depositRef = db.collection('deposits').doc(transactionId);
     const depositDoc = await depositRef.get();
-    
-    if (!depositDoc.exists) return { statusCode: 404, body: JSON.stringify({ error: 'Depósito não encontrado' }) };
 
-    const { userId, amount, status: currentStatus, userName } = depositDoc.data();
-
-    if (currentStatus === 'completed' || currentStatus === 'approved') {
-      return { statusCode: 200, body: JSON.stringify({ message: 'Já processado' }) };
+    if (!depositDoc.exists) {
+      console.log(`Depósito ${transactionId} não encontrado no Firestore.`);
+      return { statusCode: 404, headers, body: JSON.stringify({ error: 'Depósito não encontrado' }) };
     }
 
-    const parsedAmount = parseFloat(amount);
-    const userRef = db.collection('users').doc(userId);
+    const depositData = depositDoc.data();
+    
+    // Evitar processamento duplicado caso a Evopay mande o aviso 2 vezes
+    if (depositData.status === 'completed' || depositData.status === 'approved') {
+      console.log(`Depósito ${transactionId} já estava aprovado.`);
+      return { statusCode: 200, headers, body: JSON.stringify({ message: 'Pagamento já processado anteriormente' }) };
+    }
 
-    // ==========================================
-    // TRANSAÇÃO ATÔMICA
-    // ==========================================
+    const { userId, amount, userName } = depositData;
+    const parsedAmount = Number(amount);
+
+    // 4. PROCESSAR PAGAMENTO (Atomicamente com runTransaction para segurança)
     await db.runTransaction(async (transaction) => {
-      
+      const userRef = db.collection('users').doc(userId);
       const userSnap = await transaction.get(userRef);
-      if (!userSnap.exists) throw new Error("Usuário não existe");
+
+      if (!userSnap.exists) {
+        throw new Error(`Usuário ${userId} não existe`);
+      }
       const userData = userSnap.data();
 
-      let ref1Snap = null, ref2Snap = null, ref3Snap = null;
-      let ref1Ref = null, ref2Ref = null, ref3Ref = null;
-
-      if (userData.referredBy) {
-        ref1Ref = db.collection('users').doc(userData.referredBy);
-        ref1Snap = await transaction.get(ref1Ref);
-        
-        if (ref1Snap.exists && ref1Snap.data().referredBy) {
-          ref2Ref = db.collection('users').doc(ref1Snap.data().referredBy);
-          ref2Snap = await transaction.get(ref2Ref);
-
-          if (ref2Snap.exists && ref2Snap.data().referredBy) {
-            ref3Ref = db.collection('users').doc(ref2Snap.data().referredBy);
-            ref3Snap = await transaction.get(ref3Ref);
-          }
-        }
-      }
-
-      // A) Atualizar Depósito
+      // --- ATUALIZAÇÃO DO DEPÓSITO ---
+      // MUDA O STATUS DE PENDING PARA COMPLETED!
       transaction.update(depositRef, { 
-        status: 'completed', 
-        paidAt: admin.firestore.FieldValue.serverTimestamp() 
+        status: 'completed',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
-      // B) Atualizar Saldo do Usuário
+      // --- ATUALIZAÇÃO DO USUÁRIO ---
+      // ADICIONA SALDO E totalDeposited (ESSENCIAL PARA O PLANO DE CARREIRA FUNCIONAR!)
       transaction.update(userRef, {
         balance: admin.firestore.FieldValue.increment(parsedAmount),
         totalDeposited: admin.firestore.FieldValue.increment(parsedAmount)
       });
 
-      // C) Histórico do Depósito
-      const userTransRef = userRef.collection('transactions').doc(transactionId);
-      transaction.set(userTransRef, {
+      // --- HISTÓRICO DO USUÁRIO ---
+      // Cria ou atualiza a transação na subcoleção do usuário para aparecer no app com o check verde
+      const userTxRef = userRef.collection('transactions').doc(transactionId);
+      transaction.set(userTxRef, {
+        amount: parsedAmount,
         status: 'completed',
-        description: 'Depósito via PIX (Confirmado)',
-        paidAt: admin.firestore.FieldValue.serverTimestamp()
+        type: 'deposit',
+        description: 'Depósito via PIX',
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // D) Comissões
+      // --- LÓGICA DE AFILIADOS E COMISSÕES (3 NÍVEIS) ---
+      const ref1Id = userData.referredBy || userData.invitedBy;
       
-      // Nível 1 (20%)
-      if (ref1Snap?.exists) {
-        const bonus1 = parsedAmount * 0.20;
-        transaction.update(ref1Ref, {
-          balance: admin.firestore.FieldValue.increment(bonus1),
-          totalCommissions: admin.firestore.FieldValue.increment(bonus1)
-        });
-        transaction.set(ref1Ref.collection('transactions').doc(`bonus1_${transactionId}`), {
-          amount: bonus1, status: 'completed', type: 'commission',
-          level: 1, // <--- ADICIONADO AQUI
-          description: `Indicação Nível 1: ${userName || 'Usuário'}`,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-      }
+      if (ref1Id) {
+        const ref1Ref = db.collection('users').doc(ref1Id);
+        const ref1Snap = await transaction.get(ref1Ref);
 
-      // Nível 2 (5%)
-      if (ref2Snap?.exists) {
-        const bonus2 = parsedAmount * 0.05;
-        transaction.update(ref2Ref, {
-          balance: admin.firestore.FieldValue.increment(bonus2),
-          totalCommissions: admin.firestore.FieldValue.increment(bonus2)
-        });
-        transaction.set(ref2Ref.collection('transactions').doc(`bonus2_${transactionId}`), {
-          amount: bonus2, status: 'completed', type: 'commission',
-          level: 2, // <--- ADICIONADO AQUI
-          description: `Indicação Nível 2: ${userName || 'Usuário'}`,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-      }
+        if (ref1Snap.exists) {
+          const bonus1 = parsedAmount * 0.20; // 20% Nível 1
+          transaction.update(ref1Ref, {
+            balance: admin.firestore.FieldValue.increment(bonus1),
+            totalCommissions: admin.firestore.FieldValue.increment(bonus1)
+          });
+          transaction.set(ref1Ref.collection('transactions').doc(`bonus1_${transactionId}`), {
+            amount: bonus1, 
+            status: 'completed', 
+            type: 'commission',
+            level: 1, 
+            description: `Comissão Nível 1 (${userName || 'Usuário'})`,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
 
-      // Nível 3 (1%)
-      if (ref3Snap?.exists) {
-        const bonus3 = parsedAmount * 0.01;
-        transaction.update(ref3Ref, {
-          balance: admin.firestore.FieldValue.increment(bonus3),
-          totalCommissions: admin.firestore.FieldValue.increment(bonus3)
-        });
-        transaction.set(ref3Ref.collection('transactions').doc(`bonus3_${transactionId}`), {
-          amount: bonus3, status: 'completed', type: 'commission',
-          level: 3, // <--- ADICIONADO AQUI
-          description: `Indicação Nível 3: ${userName || 'Usuário'}`,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
+          // Nível 2 (Baseado no referido do Nível 1)
+          const ref2Id = ref1Snap.data().referredBy || ref1Snap.data().invitedBy;
+          if (ref2Id) {
+            const ref2Ref = db.collection('users').doc(ref2Id);
+            const ref2Snap = await transaction.get(ref2Ref);
+            if (ref2Snap.exists) {
+              const bonus2 = parsedAmount * 0.05; // 5% Nível 2
+              transaction.update(ref2Ref, {
+                balance: admin.firestore.FieldValue.increment(bonus2),
+                totalCommissions: admin.firestore.FieldValue.increment(bonus2)
+              });
+              transaction.set(ref2Ref.collection('transactions').doc(`bonus2_${transactionId}`), {
+                amount: bonus2, 
+                status: 'completed', 
+                type: 'commission',
+                level: 2, 
+                description: `Comissão Nível 2 (${userName || 'Usuário'})`,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+              });
+
+              // Nível 3
+              const ref3Id = ref2Snap.data().referredBy || ref2Snap.data().invitedBy;
+              if (ref3Id) {
+                const ref3Ref = db.collection('users').doc(ref3Id);
+                const ref3Snap = await transaction.get(ref3Ref);
+                if (ref3Snap.exists) {
+                  const bonus3 = parsedAmount * 0.01; // 1% Nível 3
+                  transaction.update(ref3Ref, {
+                    balance: admin.firestore.FieldValue.increment(bonus3),
+                    totalCommissions: admin.firestore.FieldValue.increment(bonus3)
+                  });
+                  transaction.set(ref3Ref.collection('transactions').doc(`bonus3_${transactionId}`), {
+                    amount: bonus3, 
+                    status: 'completed', 
+                    type: 'commission',
+                    level: 3, 
+                    description: `Comissão Nível 3 (${userName || 'Usuário'})`,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp()
+                  });
+                }
+              }
+            }
+          }
+        }
       }
     });
 
-    return { statusCode: 200, body: JSON.stringify({ success: true }) };
+    console.log(`=== SUCESSO: Depósito ${transactionId} processado! ===`);
+    return { statusCode: 200, headers, body: JSON.stringify({ success: true }) };
 
   } catch (error) {
-    console.error("Erro no webhook:", error);
-    return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
+    console.error("=== ERRO WEBHOOK ===", error);
+    return { statusCode: 500, headers, body: JSON.stringify({ error: error.message }) };
   }
 };
