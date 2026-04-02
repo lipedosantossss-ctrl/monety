@@ -336,7 +336,12 @@ export default function ProfilePage() {
                     }`}>
                       {tx.type === 'withdrawal' ? '-' : '+'}R$ {(Number(tx.amount) || 0).toFixed(2)}
                     </p>
-                    <p className="text-xs text-gray-400">{tx.status}</p>
+                    {/* AQUI ESTÁ A CORREÇÃO DO STATUS */}
+                    <p className={`text-xs font-semibold ${
+                      (tx.status === 'completed' || tx.status === 'PAID') ? 'text-[#22c55e]' : 'text-gray-400'
+                    }`}>
+                      {(tx.status === 'completed' || tx.status === 'PAID') ? 'Concluído' : 'Pendente'}
+                    </p>
                   </div>
                 </div>
               ))}
