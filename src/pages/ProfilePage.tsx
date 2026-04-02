@@ -54,22 +54,17 @@ export default function ProfilePage() {
     setIsFetchingTeam(true);
     try {
       const db = getFirestore();
-      // NOTA: Se o seu banco salva o ID de quem convidou em um campo com outro nome (ex: inviteCode), altere "referredBy" abaixo.
-      const teamQuery = query(collection(db, 'users'), where('referredBy', '==', user.id));
+      // AJUSTE: Alterado de 'referredBy' para 'invitedBy' conforme estrutura do Firebase
+      const teamQuery = query(collection(db, 'users'), where('invitedBy', '==', user.id));
       const teamSnapshot = await getDocs(teamQuery);
       
       let total = 0;
-      for (const memberDoc of teamSnapshot.docs) {
-        // Busca os depósitos apenas com status 'completed' daquele membro
-        const depositsQuery = collection(db, 'users', memberDoc.id, 'deposits');
-        const depositsSnap = await getDocs(depositsQuery);
-        depositsSnap.forEach(dep => {
-          const data = dep.data();
-          if (data.status === 'completed') {
-            total += Number(data.amount) || 0;
-          }
-        });
-      }
+      // AJUSTE: Somando diretamente o campo 'totalDeposited' identificado no banco
+      teamSnapshot.forEach(memberDoc => {
+        const data = memberDoc.data();
+        total += Number(data.totalDeposited) || 0;
+      });
+      
       setTeamTotal(total);
     } catch (error) {
       console.error("Erro ao buscar dados da equipe:", error);
@@ -407,7 +402,6 @@ export default function ProfilePage() {
   };
 
   const renderDeposit = () => (
-    //... (Todo o seu código original do renderDeposit se mantém intacto)
     <div className="space-y-6 animate-slide-up">
       <button
         onClick={() => {
@@ -544,7 +538,6 @@ export default function ProfilePage() {
   );
 
   const renderWithdraw = () => {
-    //... (Todo o seu código original do renderWithdraw se mantém intacto)
     const withdrawCheck = canWithdrawNow();
     const amount = Number(withdrawAmount) || 0;
     const fee = amount * 0.10;
