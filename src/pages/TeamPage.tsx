@@ -24,6 +24,13 @@ interface TeamData {
 export default function TeamPage() {
   const { user } = useAuth();
   
+  // Debug para verificar o que o Firebase está enviando
+  useEffect(() => {
+    if (user) {
+      console.log("Dados do usuário vindos do Firebase:", user);
+    }
+  }, [user]);
+
   const [teamData, setTeamData] = useState<TeamData>({
     level1: { count: 0, totalEarned: 0, members: [] },
     level2: { count: 0, totalEarned: 0, members: [] },
@@ -34,76 +41,80 @@ export default function TeamPage() {
   const [activeLevel, setActiveLevel] = useState<1 | 2 | 3>(1);
   const [copied, setCopied] = useState(false);
 
-  // CORREÇÃO: Usar inviteCode (camelCase) como definido no AuthContext
   const inviteLink = `${window.location.origin}/?code=${user?.inviteCode}`;
 
+  // CORREÇÃO: Usar user?.id como dependência para evitar recarregamentos infinitos
   useEffect(() => {
-    const userId = user?.id; // Pegamos o ID do AuthContext
+    const userId = user?.id; 
     
     if (userId) {
       fetchRealTeamData(userId);
     } else if (user === null) {
       setLoading(false);
     }
-  }, [user]);
+  }, [user?.id]);
 
   const fetchRealTeamData = async (userId: string) => {
     setLoading(true);
     try {
       const usersRef = collection(db, 'users');
       
-      // --- NÍVEL 1: Quem foi convidado diretamente por este userId ---
+      // 1. BUSCAR MEMBROS DA EQUIPE (NÍVEL 1)
       const q1 = query(usersRef, where('referredBy', '==', userId));
       const snap1 = await getDocs(q1);
       
       const l1Docs = snap1.docs.map(d => ({ id: d.id, ...d.data() }));
       const l1Ids = l1Docs.map(d => d.id);
 
-      // --- NÍVEL 2: Quem foi convidado por alguém do Nível 1 ---
+      // 2. BUSCAR MEMBROS DA EQUIPE (NÍVEL 2)
       let l2Docs: any[] = [];
       let l2Ids: string[] = [];
       if (l1Ids.length > 0) {
-        const l2Promises = l1Ids.map(id => getDocs(query(usersRef, where('referredBy', '==', id))));
+        const chunks = [];
+        for (let i = 0; i < l1Ids.length; i += 30) {
+          chunks.push(l1Ids.slice(i, i + 30));
+        }
+        
+        const l2Promises = chunks.map(chunk => 
+          getDocs(query(usersRef, where('referredBy', 'in', chunk)))
+        );
         const snap2Array = await Promise.all(l2Promises);
         l2Docs = snap2Array.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
         l2Ids = l2Docs.map(d => d.id);
       }
 
-      // --- NÍVEL 3: Quem foi convidado por alguém do Nível 2 ---
+      // 3. BUSCAR MEMBROS DA EQUIPE (NÍVEL 3)
       let l3Docs: any[] = [];
       if (l2Ids.length > 0) {
-        const l3Promises = l2Ids.map(id => getDocs(query(usersRef, where('referredBy', '==', id))));
+        const chunks = [];
+        for (let i = 0; i < l2Ids.length; i += 30) {
+          chunks.push(l2Ids.slice(i, i + 30));
+        }
+        const l3Promises = chunks.map(chunk => 
+          getDocs(query(usersRef, where('referredBy', 'in', chunk)))
+        );
         const snap3Array = await Promise.all(l3Promises);
         l3Docs = snap3Array.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
       }
 
-      // --- FUNÇÃO AUXILIAR PARA FORMATAR OS DADOS ---
       const formatMembers = (docs: any[]): TeamMember[] => {
         return docs.map(d => ({
           id: d.id,
           email: d.email || 'Usuário Oculto',
-          status: 'active', // Se houver sistema de depósito, altere a validação aqui
-          // Tratamento para a data do Firebase (Timestamp vs String)
+          status: 'active',
           created_at: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : d.createdAt || new Date().toISOString()
         }));
       };
 
-      const members1 = formatMembers(l1Docs);
-      const members2 = formatMembers(l2Docs);
-      const members3 = formatMembers(l3Docs);
-
-      // Cálculo de ganhos (Adapte os valores de R$10, R$5 e R$2 conforme sua regra de negócios real)
-      const calcEarned = (members: TeamMember[], value: number) => members.length * value;
-
       setTeamData({
-        level1: { count: members1.length, totalEarned: calcEarned(members1, 10), members: members1 },
-        level2: { count: members2.length, totalEarned: calcEarned(members2, 5), members: members2 },
-        level3: { count: members3.length, totalEarned: calcEarned(members3, 2), members: members3 }
+        level1: { count: l1Docs.length, totalEarned: 0, members: formatMembers(l1Docs) },
+        level2: { count: l2Docs.length, totalEarned: 0, members: formatMembers(l2Docs) },
+        level3: { count: l3Docs.length, totalEarned: 0, members: formatMembers(l3Docs) }
       });
 
     } catch (err) {
       console.error('Erro ao carregar equipe:', err);
-      toast.error('Erro ao carregar os membros da equipe');
+      toast.error('Erro ao carregar os dados da equipe');
     } finally {
       setLoading(false);
     }
@@ -140,9 +151,10 @@ export default function TeamPage() {
   }
 
   const currentLevel = teamData[`level${activeLevel}` as keyof TeamData];
-  const percentage = activeLevel === 1 ? 20 : activeLevel === 2 ? 5 : 1;
   const totalReferrals = teamData.level1.count + teamData.level2.count + teamData.level3.count;
-  const totalEarnings = teamData.level1.totalEarned + teamData.level2.totalEarned + teamData.level3.totalEarned;
+  
+  // VALOR REAL: Puxando diretamente do campo 'totalCommissions' sincronizado pelo AuthContext
+  const totalEarnings = user?.totalCommissions || 0;
 
   return (
     <div className="space-y-6 pb-6 animate-fade-in">
@@ -151,7 +163,6 @@ export default function TeamPage() {
         <p className="text-gray-400 text-sm">Convide amigos e ganhe comissões</p>
       </div>
 
-      {/* Estatísticas Principais */}
       <div className="grid grid-cols-2 gap-3">
         <Card className="bg-[#111111]/80 backdrop-blur-sm border-[#1a1a1a]">
           <CardContent className="pt-4">
@@ -173,12 +184,12 @@ export default function TeamPage() {
               </div>
               <span className="text-gray-400 text-sm">Comissões</span>
             </div>
+            {/* Aqui ele mostra exatamente o que está no Firebase */}
             <p className="text-2xl font-bold text-[#22c55e]">R$ {totalEarnings.toFixed(2)}</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Níveis de Comissão */}
       <Card className="bg-[#111111]/80 backdrop-blur-sm border-[#1a1a1a]">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-white">
@@ -228,7 +239,6 @@ export default function TeamPage() {
         </CardContent>
       </Card>
 
-      {/* Link de Convite */}
       <Card className="bg-[#111111]/80 backdrop-blur-sm border-[#1a1a1a]">
         <CardHeader>
           <CardTitle className="text-white">Seu Link de Convite</CardTitle>
@@ -270,13 +280,11 @@ export default function TeamPage() {
         </CardContent>
       </Card>
 
-      {/* Meus Convidados */}
       <Card className="bg-[#111111]/80 backdrop-blur-sm border-[#1a1a1a]">
         <CardHeader>
           <CardTitle className="text-white">Meus Convidados</CardTitle>
         </CardHeader>
         <CardContent>
-          {/* Abas de Níveis */}
           <div className="grid grid-cols-3 gap-2 mb-4">
             {[1, 2, 3].map((level) => {
               const levelData = teamData[`level${level}` as keyof TeamData];
@@ -284,22 +292,21 @@ export default function TeamPage() {
                 <button
                   key={level}
                   onClick={() => setActiveLevel(level as 1 | 2 | 3)}
-                  className={`py-3 rounded-xl font-semibold text-sm transition-all ${
+                  className={`py-3 rounded-xl font-semibold text-sm transition-all flex flex-col items-center justify-center ${
                     activeLevel === level
                       ? 'bg-gradient-to-r from-[#22c55e] to-[#16a34a] text-white shadow-lg shadow-[#22c55e]/20'
                       : 'bg-[#0a0a0a] text-gray-400 hover:bg-[#1a1a1a] border border-[#1a1a1a]'
                   }`}
                 >
-                  Nível {level}
-                  <span className="ml-1 text-xs opacity-70">
-                    ({levelData?.count || 0})
+                  <span>Nível {level}</span>
+                  <span className="text-xs opacity-80 font-normal">
+                    {levelData?.count || 0} usuários
                   </span>
                 </button>
               );
             })}
           </div>
 
-          {/* Lista de Membros */}
           <div className="overflow-hidden" key={activeLevel}>
             {currentLevel && currentLevel.members.length > 0 ? (
               <div className="space-y-2 max-h-64 overflow-y-auto animate-slide-up">
@@ -312,7 +319,7 @@ export default function TeamPage() {
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 bg-[#22c55e]/20 rounded-full flex items-center justify-center">
                         <span className="text-[#22c55e] font-bold text-sm">
-                          {member.email !== 'Usuário Oculto' && member.email !== 'Sem E-mail' ? member.email[0].toUpperCase() : '?'}
+                          {member.email && member.email !== 'Usuário Oculto' ? member.email[0].toUpperCase() : '?'}
                         </span>
                       </div>
                       <div>
@@ -323,8 +330,10 @@ export default function TeamPage() {
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="bg-[#22c55e]/10 px-3 py-1 rounded-full">
-                        <span className="text-[#22c55e] font-semibold text-sm">{percentage}%</span>
+                      <div className="bg-[#22c55e]/10 px-3 py-1 rounded-full inline-block">
+                        <span className="text-[#22c55e] font-semibold text-sm">
+                          {activeLevel === 1 ? '20%' : activeLevel === 2 ? '5%' : '1%'}
+                        </span>
                       </div>
                       <p className="text-gray-500 text-xs mt-1">
                         {new Date(member.created_at).toLocaleDateString('pt-BR')}
@@ -337,9 +346,6 @@ export default function TeamPage() {
               <div className="text-center py-8 animate-fade-in">
                 <Users className="w-12 h-12 text-gray-600 mx-auto mb-3" />
                 <p className="text-gray-400">Nenhum convidado no nível {activeLevel}</p>
-                {activeLevel === 1 && (
-                  <p className="text-gray-500 text-sm mt-1">Compartilhe seu link e comece a ganhar!</p>
-                )}
               </div>
             )}
           </div>
