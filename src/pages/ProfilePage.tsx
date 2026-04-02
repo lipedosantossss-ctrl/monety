@@ -52,30 +52,58 @@ export default function ProfilePage() {
   const fetchTeamData = async () => {
     if (!user?.id) return;
     setIsFetchingTeam(true);
+    
     try {
       const db = getFirestore();
-      
-      // 1. Primeiro, buscamos o seu documento para pegar o seu 'inviteCode'
-      const userRef = doc(db, 'users', user.id);
-      const userSnap = await getDoc(userRef);
-      const myInviteCode = userSnap.data()?.inviteCode;
-
-      // 2. Buscamos a equipe verificando se o campo 'invitedBy' tem o seu código de convite ou o seu ID
-      let teamQuery = query(collection(db, 'users'), where('invitedBy', '==', myInviteCode || user.id));
-      let teamSnapshot = await getDocs(teamQuery);
-      
-      // Tentativa de segurança: Se não achar pelo código, tenta achar pelo ID do usuário
-      if (teamSnapshot.empty && myInviteCode) {
-        teamQuery = query(collection(db, 'users'), where('invitedBy', '==', user.id));
-        teamSnapshot = await getDocs(teamQuery);
-      }
-      
+      const usersRef = collection(db, 'users');
       let total = 0;
-      // 3. Somamos o campo 'totalDeposited' que está direto no documento de cada membro
-      teamSnapshot.forEach(memberDoc => {
-        const data = memberDoc.data();
-        total += Number(data.totalDeposited) || 0;
-      });
+      const processedIds = new Set(); // Para não somar o mesmo usuário duas vezes
+
+      const processSnapshot = (snapshot: any) => {
+        snapshot.forEach((memberDoc: any) => {
+          if (!processedIds.has(memberDoc.id)) {
+            const data = memberDoc.data();
+            total += Number(data.totalDeposited) || 0;
+            processedIds.add(memberDoc.id);
+          }
+        });
+      };
+
+      // 1. BUSCAR MEMBROS DA EQUIPE (NÍVEL 1)
+      // Buscando pelo ID do usuário como é padrão na sua TeamPage
+      const q1Ref = query(usersRef, where('referredBy', '==', user.id));
+      const q1Inv = query(usersRef, where('invitedBy', '==', user.id)); // Fallback segurança
+      
+      const [snap1Ref, snap1Inv] = await Promise.all([getDocs(q1Ref), getDocs(q1Inv)]);
+      
+      processSnapshot(snap1Ref);
+      processSnapshot(snap1Inv);
+
+      // 2. BUSCAR MEMBROS DA EQUIPE (NÍVEL 2)
+      const l1Ids = Array.from(processedIds);
+      if (l1Ids.length > 0) {
+        const chunks = [];
+        for (let i = 0; i < l1Ids.length; i += 30) chunks.push(l1Ids.slice(i, i + 30));
+        
+        const l2Promises = chunks.map(chunk => getDocs(query(usersRef, where('referredBy', 'in', chunk))));
+        const snap2Array = await Promise.all(l2Promises);
+        
+        snap2Array.forEach(processSnapshot);
+      }
+
+      // 3. BUSCAR MEMBROS DA EQUIPE (NÍVEL 3)
+      const allIds = Array.from(processedIds);
+      const l2Ids = allIds.filter(id => !l1Ids.includes(id)); 
+      
+      if (l2Ids.length > 0) {
+        const chunks = [];
+        for (let i = 0; i < l2Ids.length; i += 30) chunks.push(l2Ids.slice(i, i + 30));
+        
+        const l3Promises = chunks.map(chunk => getDocs(query(usersRef, where('referredBy', 'in', chunk))));
+        const snap3Array = await Promise.all(l3Promises);
+        
+        snap3Array.forEach(processSnapshot);
+      }
 
       setTeamTotal(total);
     } catch (error) {
@@ -111,7 +139,6 @@ export default function ProfilePage() {
         });
 
         toast.success(`🎉 Parabéns! Bônus de R$ ${amount.toFixed(2)} resgatado com sucesso!`);
-        // Atualiza os dados localmente (recarregando para garantir sincronia do saldo na UI)
         window.location.reload(); 
       }
     } catch (error) {
