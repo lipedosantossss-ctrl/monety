@@ -4,7 +4,7 @@ import {
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
   onAuthStateChanged,
-  sendPasswordResetEmail, // <-- Nova importação adicionada
+  sendPasswordResetEmail,
   User as FirebaseUser
 } from 'firebase/auth';
 
@@ -24,16 +24,19 @@ import {
 
 import { auth, db } from '../firebase/firebase';
 
-// Interface do Usuário adaptada para suportar o sistema de afiliados
+// Interface atualizada com campos da imagem e do TeamPage
 interface User {
   id: string;
   name: string;
   email: string;
   balance: number;
   inviteCode: string;
-  referredBy?: string | null; 
+  referredBy?: string | null;  // Usado na lógica de busca da TeamPage
+  invitedBy?: string | null;   // Campo exato visto na imagem do DB
   totalEarned: number;
   totalWithdrawn: number;
+  totalDeposited: number;      // Campo visto na imagem
+  totalCommissions: number;    // Requisitado pela TeamPage e visto na imagem
   spinsAvailable: number;
   role: string;
   createdAt: any;
@@ -45,7 +48,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, name: string, inviteCode?: string) => Promise<void>;
   logout: () => Promise<void>;
-  resetPassword: (email: string) => Promise<void>; // <-- Nova tipagem adicionada
+  resetPassword: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
   updateBalance: (amount: number) => Promise<void>;
   completeSpin: (prizeAmount: number) => Promise<void>;
@@ -95,13 +98,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const userDocRef = doc(db, 'users', firebaseUser.uid);
 
-      // Listener em tempo real para refletir mudanças de saldo e bônus instantaneamente
       unsubscribeUser = onSnapshot(userDocRef, async (docSnap) => {
         if (!docSnap.exists()) return;
         
         const data = docSnap.data();
 
-        // Garante que todo usuário tenha um código de convite próprio
         if (!data.inviteCode) {
           const newCode = await generateUniqueInviteCode();
           await updateDoc(userDocRef, { inviteCode: newCode });
@@ -116,9 +117,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           inviteCode: data.inviteCode,
           totalEarned: data.totalEarned || 0,
           totalWithdrawn: data.totalWithdrawn || 0,
+          totalDeposited: data.totalDeposited || 0,       // Mapeado do DB
+          totalCommissions: data.totalCommissions || 0,   // Mapeado do DB
           spinsAvailable: data.spinsAvailable || 0,
           role: data.role || 'user',
-          referredBy: data.referredBy || null,
+          referredBy: data.referredBy || data.invitedBy || null, // Fallback entre os dois campos
+          invitedBy: data.invitedBy || null,
           createdAt: data.createdAt
         } as User);
       });
@@ -134,27 +138,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   /* =========================
-     REGISTER ADAPTADO PARA 3 NÍVEIS
+     REGISTER ADAPTADO
   ========================= */
 
   const register = async (email: string, password: string, name: string, inviteCodeInput?: string) => {
     try {
-      // 1. Cria a conta no Firebase Auth
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const uid = userCredential.user.uid;
 
       let inviterUid: string | null = null;
 
-      // 2. Processa o código de convite (se fornecido)
       if (inviteCodeInput && inviteCodeInput.trim() !== "") {
         const usersRef = collection(db, 'users');
         const q = query(usersRef, where('inviteCode', '==', inviteCodeInput.trim().toUpperCase()));
         const snapshot = await getDocs(q);
 
         if (!snapshot.empty) {
-          inviterUid = snapshot.docs[0].id; // ID do usuário que convidou
+          inviterUid = snapshot.docs[0].id;
 
-          // 3. Registra na coleção 'invites' com status pending
           await addDoc(collection(db, 'invites'), {
             createdAt: serverTimestamp(),
             invitedId: uid,
@@ -165,18 +166,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
 
-      // 4. Gera o código de convite do novo usuário
       const myInviteCode = await generateUniqueInviteCode();
 
-      // 5. Salva o perfil completo no Firestore
+      // Inicializa o documento com TODOS os campos necessários
       await setDoc(doc(db, 'users', uid), {
         name: name,
         email: email,
         balance: 0,
         inviteCode: myInviteCode,
         referredBy: inviterUid || null, 
+        invitedBy: inviterUid || null,  // Salva em ambos para consistência com a imagem
         totalEarned: 0,
         totalWithdrawn: 0,
+        totalDeposited: 0,              // Novo campo
+        totalCommissions: 0,            // Novo campo (TeamPage)
         spinsAvailable: 1, 
         role: 'user',
         createdAt: serverTimestamp()
@@ -187,10 +190,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw error;
     }
   };
-
-  /* =========================
-     FUNÇÕES AUXILIARES
-  ========================= */
 
   const login = async (email: string, password: string) => {
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
@@ -204,14 +203,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setToken(null);
   };
 
-  // <-- NOVA FUNÇÃO DE RECUPERAÇÃO DE SENHA AQUI -->
   const resetPassword = async (email: string) => {
-    try {
-      await sendPasswordResetEmail(auth, email);
-    } catch (error) {
-      console.error("Erro ao enviar email de redefinição:", error);
-      throw error;
-    }
+    await sendPasswordResetEmail(auth, email);
   };
 
   const updateBalance = async (amount: number) => {
@@ -244,7 +237,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       login, 
       register, 
       logout, 
-      resetPassword, // <-- Expondo a função no Provider
+      resetPassword, 
       refreshUser, 
       updateBalance, 
       completeSpin 
