@@ -128,7 +128,23 @@ exports.handler = async (event) => {
         totalDeposited: (userData.totalDeposited || 0) + amount
       });
 
-      // Atualiza o Nível 1 (20% Comissão + 1 Giro extra + Total de Comissões)
+      // Função auxiliar para criar registro no histórico (transactions) dos afiliados
+      const registrarHistoricoComissao = (afiliadoRef, valorComissao, nivel, emailOrigem) => {
+        const novaTransacaoRef = afiliadoRef.collection('transactions').doc();
+        const nomeOrigem = emailOrigem ? emailOrigem.split('@')[0] : 'Usuário Oculto';
+        
+        transaction.set(novaTransacaoRef, {
+          type: 'commission',
+          amount: valorComissao,
+          status: 'completed',
+          description: `Indicação Nível ${nivel}: ${nomeOrigem}`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      };
+
+      const emailPagador = userData.email || '';
+
+      // Atualiza o Nível 1 (20% Comissão + 1 Giro extra + Total de Comissões + Histórico)
       if (level1Ref && level1Data) {
         const comissaoL1 = amount * 0.20;
         transaction.update(level1Ref, { 
@@ -136,24 +152,27 @@ exports.handler = async (event) => {
           girosRoleta: (level1Data.girosRoleta || 0) + 1, 
           totalCommissions: (level1Data.totalCommissions || 0) + comissaoL1
         });
+        registrarHistoricoComissao(level1Ref, comissaoL1, 1, emailPagador);
       }
 
-      // Atualiza o Nível 2 (5% Comissão + Total de Comissões)
+      // Atualiza o Nível 2 (5% Comissão + Total de Comissões + Histórico)
       if (level2Ref && level2Data) {
         const comissaoL2 = amount * 0.05;
         transaction.update(level2Ref, { 
           balance: (level2Data.balance || 0) + comissaoL2,
           totalCommissions: (level2Data.totalCommissions || 0) + comissaoL2
         });
+        registrarHistoricoComissao(level2Ref, comissaoL2, 2, emailPagador);
       }
 
-      // Atualiza o Nível 3 (1% Comissão + Total de Comissões)
+      // Atualiza o Nível 3 (1% Comissão + Total de Comissões + Histórico)
       if (level3Ref && level3Data) {
         const comissaoL3 = amount * 0.01;
         transaction.update(level3Ref, { 
           balance: (level3Data.balance || 0) + comissaoL3,
           totalCommissions: (level3Data.totalCommissions || 0) + comissaoL3
         });
+        registrarHistoricoComissao(level3Ref, comissaoL3, 3, emailPagador);
       }
     });
 
