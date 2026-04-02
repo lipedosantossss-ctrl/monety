@@ -24,8 +24,8 @@ exports.handler = async (event) => {
     const data = JSON.parse(event.body);
     const { reference, status } = data;
 
-    // Se o status não for PAID, não precisamos fazer a transação
-    if (status !== 'PAID') {
+    // Aceita tanto 'PAID' (padrão de muitos gateways) quanto 'completed'
+    if (status !== 'PAID' && status !== 'completed') {
       return {
         statusCode: 200,
         body: JSON.stringify({ success: true, message: 'Status ignorado.' }),
@@ -47,8 +47,8 @@ exports.handler = async (event) => {
 
       const depositData = depositSnap.data();
 
-      // Proteção para não processar o mesmo depósito duas vezes
-      if (depositData.status === 'PAID') {
+      // Proteção para não processar o mesmo depósito duas vezes (verifica 'completed' ou 'PAID')
+      if (depositData.status === 'completed' || depositData.status === 'PAID') {
         throw new Error('Este depósito já foi processado anteriormente.');
       }
 
@@ -122,9 +122,9 @@ exports.handler = async (event) => {
       // FASE 2: APENAS GRAVAÇÕES (Todos os UPDATEs devem ficar aqui)
       // =========================================================
       
-      // Atualiza o status do depósito
+      // Atualiza o status do depósito para "completed"
       transaction.update(depositRef, { 
-        status: 'PAID',
+        status: 'completed',
         processedAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
