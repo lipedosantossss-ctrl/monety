@@ -54,17 +54,29 @@ export default function ProfilePage() {
     setIsFetchingTeam(true);
     try {
       const db = getFirestore();
-      // AJUSTE: Alterado de 'referredBy' para 'invitedBy' conforme estrutura do Firebase
-      const teamQuery = query(collection(db, 'users'), where('invitedBy', '==', user.id));
-      const teamSnapshot = await getDocs(teamQuery);
+      
+      // 1. Primeiro, buscamos o seu documento para pegar o seu 'inviteCode'
+      const userRef = doc(db, 'users', user.id);
+      const userSnap = await getDoc(userRef);
+      const myInviteCode = userSnap.data()?.inviteCode;
+
+      // 2. Buscamos a equipe verificando se o campo 'invitedBy' tem o seu código de convite ou o seu ID
+      let teamQuery = query(collection(db, 'users'), where('invitedBy', '==', myInviteCode || user.id));
+      let teamSnapshot = await getDocs(teamQuery);
+      
+      // Tentativa de segurança: Se não achar pelo código, tenta achar pelo ID do usuário
+      if (teamSnapshot.empty && myInviteCode) {
+        teamQuery = query(collection(db, 'users'), where('invitedBy', '==', user.id));
+        teamSnapshot = await getDocs(teamQuery);
+      }
       
       let total = 0;
-      // AJUSTE: Somando diretamente o campo 'totalDeposited' identificado no banco
+      // 3. Somamos o campo 'totalDeposited' que está direto no documento de cada membro
       teamSnapshot.forEach(memberDoc => {
         const data = memberDoc.data();
         total += Number(data.totalDeposited) || 0;
       });
-      
+
       setTeamTotal(total);
     } catch (error) {
       console.error("Erro ao buscar dados da equipe:", error);
