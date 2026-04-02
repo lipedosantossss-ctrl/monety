@@ -24,7 +24,9 @@ exports.handler = async (event) => {
     const data = JSON.parse(event.body);
     const { reference, status } = data;
 
-    // Aceita tanto 'PAID' (padrão de muitos gateways) quanto 'completed'
+    console.log(`=== PROCESSANDO WEBHOOK: Ref ${reference} - Status ${status} ===`);
+
+    // Aceita tanto 'PAID' quanto 'completed'
     if (status !== 'PAID' && status !== 'completed') {
       return {
         statusCode: 200,
@@ -32,28 +34,33 @@ exports.handler = async (event) => {
       };
     }
 
-    const depositRef = db.collection('deposits').doc(reference);
+    // Busca o documento da transação usando collectionGroup (procura em todas as sub-coleções 'transactions')
+    const transactionQuery = await db.collectionGroup('transactions')
+      .where('transactionId', '==', reference)
+      .limit(1)
+      .get();
+
+    if (transactionQuery.empty) {
+      console.error(`ERRO: Transação com ID ${reference} não encontrada.`);
+      return { 
+        statusCode: 404, 
+        body: JSON.stringify({ success: false, error: 'Transação não encontrada.' }) 
+      };
+    }
+
+    // Recupera a referência exata do documento e do usuário
+    const depositDoc = transactionQuery.docs[0];
+    const depositRef = depositDoc.ref; 
+    const depositData = depositDoc.data();
+    const userId = depositRef.parent.parent.id; 
 
     // Inicia a transação no Firestore
     await db.runTransaction(async (transaction) => {
+      
       // =========================================================
       // FASE 1: APENAS LEITURAS (Todos os GETs devem ficar aqui)
       // =========================================================
-      const depositSnap = await transaction.get(depositRef);
-
-      if (!depositSnap.exists) {
-        throw new Error('Depósito não encontrado.');
-      }
-
-      const depositData = depositSnap.data();
-
-      // Proteção para não processar o mesmo depósito duas vezes (verifica 'completed' ou 'PAID')
-      if (depositData.status === 'completed' || depositData.status === 'PAID') {
-        throw new Error('Este depósito já foi processado anteriormente.');
-      }
-
-      const userId = depositData.userId;
-      const amount = depositData.amount;
+      
       const userRef = db.collection('users').doc(userId);
       const userSnap = await transaction.get(userRef);
 
@@ -61,9 +68,14 @@ exports.handler = async (event) => {
         throw new Error('Usuário não encontrado.');
       }
 
+      if (depositData.status === 'completed' || depositData.status === 'PAID') {
+        throw new Error('Este depósito já foi processado anteriormente.');
+      }
+
       const userData = userSnap.data();
+      const amount = depositData.amount || 0;
       
-      // Variáveis para armazenar as referências e dados dos afiliados (se existirem)
+      // Variáveis para armazenar as referências e dados dos afiliados
       let level1Ref, level2Ref, level3Ref;
       let level1Data, level2Data, level3Data;
 
@@ -71,6 +83,7 @@ exports.handler = async (event) => {
       if (userData.referredBy) {
         level1Ref = db.collection('users').doc(userData.referredBy);
         const level1Snap = await transaction.get(level1Ref);
+        
         if (level1Snap.exists) {
           level1Data = level1Snap.data();
 
@@ -78,6 +91,7 @@ exports.handler = async (event) => {
           if (level1Data.referredBy) {
             level2Ref = db.collection('users').doc(level1Data.referredBy);
             const level2Snap = await transaction.get(level2Ref);
+            
             if (level2Snap.exists) {
               level2Data = level2Snap.data();
 
@@ -85,6 +99,7 @@ exports.handler = async (event) => {
               if (level2Data.referredBy) {
                 level3Ref = db.collection('users').doc(level2Data.referredBy);
                 const level3Snap = await transaction.get(level3Ref);
+                
                 if (level3Snap.exists) {
                   level3Data = level3Snap.data();
                 }
@@ -95,65 +110,53 @@ exports.handler = async (event) => {
       }
 
       // =========================================================
-      // CÁLCULOS NA MEMÓRIA (Nenhuma gravação no banco ainda)
-      // =========================================================
-      
-      // 1. Atualiza saldo e adiciona 1 giro na roleta para quem depositou
-      const novoSaldoUsuario = (userData.balance || 0) + amount;
-      const novosGirosRoleta = (userData.girosRoleta || 0) + 1;
-
-      // 2. Calcula as comissões da rede (20%, 5%, 1%)
-      let novoSaldoNivel1, novoSaldoNivel2, novoSaldoNivel3;
-      let girosNivel1;
-
-      if (level1Data) {
-        novoSaldoNivel1 = (level1Data.balance || 0) + (amount * 0.20);
-        // Bônus de giro para o patrocinador direto (se aplicável na sua regra)
-        girosNivel1 = (level1Data.girosRoleta || 0) + 1; 
-      }
-      if (level2Data) {
-        novoSaldoNivel2 = (level2Data.balance || 0) + (amount * 0.05);
-      }
-      if (level3Data) {
-        novoSaldoNivel3 = (level3Data.balance || 0) + (amount * 0.01);
-      }
-
-      // =========================================================
       // FASE 2: APENAS GRAVAÇÕES (Todos os UPDATEs devem ficar aqui)
       // =========================================================
       
-      // Atualiza o status do depósito para "completed"
+      // Atualiza a transação (Status, Descrição customizada e Datas)
       transaction.update(depositRef, { 
         status: 'completed',
+        description: 'Depósito via PIX (Confirmado + 1 Giro)',
+        paidAt: admin.firestore.FieldValue.serverTimestamp(),
         processedAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
-      // Atualiza o usuário (Saldo + Giro)
+      // Atualiza o usuário dono do depósito (Saldo + Giro + Total Depositado)
       transaction.update(userRef, { 
-        balance: novoSaldoUsuario,
-        girosRoleta: novosGirosRoleta
+        balance: (userData.balance || 0) + amount,
+        girosRoleta: (userData.girosRoleta || 0) + 1,
+        totalDeposited: (userData.totalDeposited || 0) + amount
       });
 
-      // Atualiza o Nível 1 (Saldo + Giro)
+      // Atualiza o Nível 1 (20% Comissão + 1 Giro extra + Total de Comissões)
       if (level1Ref && level1Data) {
+        const comissaoL1 = amount * 0.20;
         transaction.update(level1Ref, { 
-          balance: novoSaldoNivel1,
-          girosRoleta: girosNivel1 
+          balance: (level1Data.balance || 0) + comissaoL1,
+          girosRoleta: (level1Data.girosRoleta || 0) + 1, 
+          totalCommissions: (level1Data.totalCommissions || 0) + comissaoL1
         });
       }
 
-      // Atualiza o Nível 2 (Apenas saldo)
+      // Atualiza o Nível 2 (5% Comissão + Total de Comissões)
       if (level2Ref && level2Data) {
-        transaction.update(level2Ref, { balance: novoSaldoNivel2 });
+        const comissaoL2 = amount * 0.05;
+        transaction.update(level2Ref, { 
+          balance: (level2Data.balance || 0) + comissaoL2,
+          totalCommissions: (level2Data.totalCommissions || 0) + comissaoL2
+        });
       }
 
-      // Atualiza o Nível 3 (Apenas saldo)
+      // Atualiza o Nível 3 (1% Comissão + Total de Comissões)
       if (level3Ref && level3Data) {
-        transaction.update(level3Ref, { balance: novoSaldoNivel3 });
+        const comissaoL3 = amount * 0.01;
+        transaction.update(level3Ref, { 
+          balance: (level3Data.balance || 0) + comissaoL3,
+          totalCommissions: (level3Data.totalCommissions || 0) + comissaoL3
+        });
       }
     });
 
-    // Se chegou até aqui, a transação foi um sucesso absoluto
     return {
       statusCode: 200,
       body: JSON.stringify({ success: true, message: 'Depósito e comissões processados com sucesso.' }),
@@ -162,7 +165,7 @@ exports.handler = async (event) => {
   } catch (error) {
     console.error('Erro na transação de webhook:', error);
     return {
-      statusCode: 500, // Retorna 500 para o gateway tentar enviar o webhook de novo mais tarde
+      statusCode: 500,
       body: JSON.stringify({ success: false, error: error.message }),
     };
   }
