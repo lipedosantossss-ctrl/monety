@@ -24,20 +24,26 @@ import {
 
 import { auth, db } from '../firebase/firebase';
 
-// Interface atualizada com campos da imagem e do TeamPage
+/* =========================
+   INTERFACE USER
+========================= */
+
 interface User {
   id: string;
   name: string;
   email: string;
   balance: number;
   inviteCode: string;
-  referredBy?: string | null;  // Usado na lógica de busca da TeamPage
-  invitedBy?: string | null;   // Campo exato visto na imagem do DB
+  referredBy?: string | null;
+  invitedBy?: string | null;
   totalEarned: number;
   totalWithdrawn: number;
-  totalDeposited: number;      // Campo visto na imagem
-  totalCommissions: number;    // Requisitado pela TeamPage e visto na imagem
-  spinsAvailable: number;
+  totalDeposited: number;
+  totalCommissions: number;
+
+  // ✅ CORRIGIDO AQUI
+  girosRoleta: number;
+
   role: string;
   createdAt: any;
 }
@@ -57,7 +63,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 /* =========================
-   LÓGICA DE GERAÇÃO DE CÓDIGO ÚNICO
+   GERAÇÃO DE CONVITE
 ========================= */
 
 const generateInviteCode = (): string => {
@@ -67,18 +73,19 @@ const generateInviteCode = (): string => {
 const generateUniqueInviteCode = async (): Promise<string> => {
   let code = generateInviteCode();
   const usersRef = collection(db, 'users');
-  
+
   for (let i = 0; i < 5; i++) {
     const q = query(usersRef, where('inviteCode', '==', code));
     const snapshot = await getDocs(q);
     if (snapshot.empty) return code;
     code = generateInviteCode();
   }
+
   return code;
 };
 
 /* =========================
-   PROVIDER PRINCIPAL
+   PROVIDER
 ========================= */
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -100,7 +107,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       unsubscribeUser = onSnapshot(userDocRef, async (docSnap) => {
         if (!docSnap.exists()) return;
-        
+
         const data = docSnap.data();
 
         if (!data.inviteCode) {
@@ -117,11 +124,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           inviteCode: data.inviteCode,
           totalEarned: data.totalEarned || 0,
           totalWithdrawn: data.totalWithdrawn || 0,
-          totalDeposited: data.totalDeposited || 0,       // Mapeado do DB
-          totalCommissions: data.totalCommissions || 0,   // Mapeado do DB
-          spinsAvailable: data.spinsAvailable || 0,
+          totalDeposited: data.totalDeposited || 0,
+          totalCommissions: data.totalCommissions || 0,
+
+          // ✅ CORREÇÃO REAL DO BUG
+          girosRoleta: data.girosRoleta || 0,
+
           role: data.role || 'user',
-          referredBy: data.referredBy || data.invitedBy || null, // Fallback entre os dois campos
+          referredBy: data.referredBy || data.invitedBy || null,
           invitedBy: data.invitedBy || null,
           createdAt: data.createdAt
         } as User);
@@ -138,57 +148,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   /* =========================
-     REGISTER ADAPTADO
+     REGISTER
   ========================= */
 
-  const register = async (email: string, password: string, name: string, inviteCodeInput?: string) => {
-    try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      const uid = userCredential.user.uid;
+  const register = async (
+    email: string,
+    password: string,
+    name: string,
+    inviteCodeInput?: string
+  ) => {
+    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+    const uid = userCredential.user.uid;
 
-      let inviterUid: string | null = null;
+    let inviterUid: string | null = null;
 
-      if (inviteCodeInput && inviteCodeInput.trim() !== "") {
-        const usersRef = collection(db, 'users');
-        const q = query(usersRef, where('inviteCode', '==', inviteCodeInput.trim().toUpperCase()));
-        const snapshot = await getDocs(q);
+    if (inviteCodeInput && inviteCodeInput.trim() !== "") {
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('inviteCode', '==', inviteCodeInput.trim().toUpperCase()));
+      const snapshot = await getDocs(q);
 
-        if (!snapshot.empty) {
-          inviterUid = snapshot.docs[0].id;
+      if (!snapshot.empty) {
+        inviterUid = snapshot.docs[0].id;
 
-          await addDoc(collection(db, 'invites'), {
-            createdAt: serverTimestamp(),
-            invitedId: uid,
-            inviterId: inviterUid,
-            level: 1,
-            status: "pending"
-          });
-        }
+        await addDoc(collection(db, 'invites'), {
+          createdAt: serverTimestamp(),
+          invitedId: uid,
+          inviterId: inviterUid,
+          level: 1,
+          status: "pending"
+        });
       }
-
-      const myInviteCode = await generateUniqueInviteCode();
-
-      // Inicializa o documento com TODOS os campos necessários
-      await setDoc(doc(db, 'users', uid), {
-        name: name,
-        email: email,
-        balance: 0,
-        inviteCode: myInviteCode,
-        referredBy: inviterUid || null, 
-        invitedBy: inviterUid || null,  // Salva em ambos para consistência com a imagem
-        totalEarned: 0,
-        totalWithdrawn: 0,
-        totalDeposited: 0,              // Novo campo
-        totalCommissions: 0,            // Novo campo (TeamPage)
-        spinsAvailable: 1, 
-        role: 'user',
-        createdAt: serverTimestamp()
-      });
-
-    } catch (error: any) {
-      console.error("Erro no registro:", error);
-      throw error;
     }
+
+    const myInviteCode = await generateUniqueInviteCode();
+
+    await setDoc(doc(db, 'users', uid), {
+      name,
+      email,
+      balance: 0,
+      inviteCode: myInviteCode,
+      referredBy: inviterUid || null,
+      invitedBy: inviterUid || null,
+      totalEarned: 0,
+      totalWithdrawn: 0,
+      totalDeposited: 0,
+      totalCommissions: 0,
+
+      // ✅ CORRIGIDO
+      girosRoleta: 1,
+
+      role: 'user',
+      createdAt: serverTimestamp()
+    });
   };
 
   const login = async (email: string, password: string) => {
@@ -209,7 +220,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateBalance = async (amount: number) => {
     if (!auth.currentUser) return;
+
     const userRef = doc(db, 'users', auth.currentUser.uid);
+
     await updateDoc(userRef, {
       balance: increment(amount),
       totalEarned: increment(amount)
@@ -218,30 +231,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const completeSpin = async (prizeAmount: number) => {
     if (!auth.currentUser) return;
+
     const userRef = doc(db, 'users', auth.currentUser.uid);
+
     await updateDoc(userRef, {
-      spinsAvailable: increment(-1),
+      girosRoleta: increment(-1),
       balance: increment(prizeAmount),
       totalEarned: increment(prizeAmount)
     });
   };
 
   const refreshUser = async () => {
-    if (auth.currentUser) await auth.currentUser.getIdToken(true);
+    if (auth.currentUser) {
+      await auth.currentUser.getIdToken(true);
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ 
-      user, 
-      token, 
-      login, 
-      register, 
-      logout, 
-      resetPassword, 
-      refreshUser, 
-      updateBalance, 
-      completeSpin 
-    }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        login,
+        register,
+        logout,
+        resetPassword,
+        refreshUser,
+        updateBalance,
+        completeSpin
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
