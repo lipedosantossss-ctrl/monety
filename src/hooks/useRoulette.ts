@@ -1,9 +1,18 @@
 import { useState, useEffect } from 'react';
-import { collection, query, where, getDocs, addDoc, serverTimestamp, doc, updateDoc, increment } from 'firebase/firestore';
+import {
+  collection,
+  addDoc,
+  serverTimestamp,
+  doc,
+  updateDoc,
+  increment,
+  getDoc
+} from 'firebase/firestore';
+
 import { db } from '../firebase/firebase';
 import { useAuth } from '../contexts/AuthContext';
 
-// Probabilidades: $1/$5/$10 frequentes, $15/$20 raros, $35/$50/$100 = 0%
+// Probabilidades
 const PRIZES = [
   { value: 1, weight: 40 },
   { value: 5, weight: 35 },
@@ -17,8 +26,10 @@ const PRIZES = [
 
 export function useRoulette() {
   const { user } = useAuth();
+
   const [canSpin, setCanSpin] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [spinsAvailable, setSpinsAvailable] = useState(0);
 
   useEffect(() => {
     if (!user) {
@@ -29,16 +40,20 @@ export function useRoulette() {
     checkCanSpin();
   }, [user]);
 
+  // ✅ Apenas verifica quantos giros existem
   const checkCanSpin = async () => {
     if (!user) return;
 
     try {
-      const today = new Date().toISOString().split('T')[0];
-      const spinsRef = collection(db, 'users', user.id, 'rouletteSpins');
-      const q = query(spinsRef, where('spinDate', '==', today));
-      const snapshot = await getDocs(q);
+      const userRef = doc(db, 'users', user.id);
+      const userSnap = await getDoc(userRef);
 
-      setCanSpin(snapshot.empty);
+      const data = userSnap.data();
+
+      const spins = data?.spinsAvailable || 0;
+
+      setSpinsAvailable(spins);
+      setCanSpin(spins > 0);
     } catch (error) {
       console.error('Error checking roulette status:', error);
     } finally {
@@ -47,12 +62,12 @@ export function useRoulette() {
   };
 
   const spin = async (): Promise<{ success: boolean; prize?: number }> => {
-    if (!user || !canSpin) {
+    if (!user || spinsAvailable <= 0) {
       return { success: false };
     }
 
     try {
-      // Calcular prêmio baseado em probabilidades
+      // calcular prêmio
       const totalWeight = PRIZES.reduce((sum, p) => sum + p.weight, 0);
       let random = Math.random() * totalWeight;
       let prize = 1;
@@ -65,23 +80,22 @@ export function useRoulette() {
         }
       }
 
-      const today = new Date().toISOString().split('T')[0];
-
-      // Registrar giro
-      await addDoc(collection(db, 'users', user.id, 'rouletteSpins'), {
-        prize,
-        spinDate: today,
-        createdAt: serverTimestamp()
-      });
-
-      // Adicionar prêmio ao saldo
       const userRef = doc(db, 'users', user.id);
+
+      // ✅ consumir 1 giro
       await updateDoc(userRef, {
+        spinsAvailable: increment(-1),
         balance: increment(prize),
         totalEarned: increment(prize)
       });
 
-      // Registrar transação
+      // registrar giro
+      await addDoc(collection(db, 'users', user.id, 'rouletteSpins'), {
+        prize,
+        createdAt: serverTimestamp()
+      });
+
+      // registrar transação
       await addDoc(collection(db, 'users', user.id, 'transactions'), {
         type: 'roulette',
         amount: prize,
@@ -90,7 +104,7 @@ export function useRoulette() {
         createdAt: serverTimestamp()
       });
 
-      setCanSpin(false);
+      await checkCanSpin();
 
       return { success: true, prize };
     } catch (error) {
@@ -103,6 +117,7 @@ export function useRoulette() {
     canSpin,
     loading,
     spin,
-    prizes: PRIZES
+    prizes: PRIZES,
+    spinsAvailable
   };
 }
