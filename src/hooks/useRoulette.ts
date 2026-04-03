@@ -29,7 +29,7 @@ export function useRoulette() {
 
   const [canSpin, setCanSpin] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [spinsAvailable, setSpinsAvailable] = useState(0);
+  const [girosDisponiveis, setGirosDisponiveis] = useState(0);
 
   useEffect(() => {
     if (!user) {
@@ -40,7 +40,7 @@ export function useRoulette() {
     checkCanSpin();
   }, [user]);
 
-  // ✅ Apenas verifica quantos giros existem
+  // ✅ verifica giros disponíveis
   const checkCanSpin = async () => {
     if (!user) return;
 
@@ -50,10 +50,10 @@ export function useRoulette() {
 
       const data = userSnap.data();
 
-      const spins = data?.spinsAvailable || 0;
+      const giros = data?.girosRoleta || 0;
 
-      setSpinsAvailable(spins);
-      setCanSpin(spins > 0);
+      setGirosDisponiveis(giros);
+      setCanSpin(giros > 0);
     } catch (error) {
       console.error('Error checking roulette status:', error);
     } finally {
@@ -62,7 +62,7 @@ export function useRoulette() {
   };
 
   const spin = async (): Promise<{ success: boolean; prize?: number }> => {
-    if (!user || spinsAvailable <= 0) {
+    if (!user || girosDisponiveis <= 0) {
       return { success: false };
     }
 
@@ -82,20 +82,20 @@ export function useRoulette() {
 
       const userRef = doc(db, 'users', user.id);
 
-      // ✅ consumir 1 giro
+      // ✅ consome giro + adiciona prêmio
       await updateDoc(userRef, {
-        spinsAvailable: increment(-1),
+        girosRoleta: increment(-1),
         balance: increment(prize),
         totalEarned: increment(prize)
       });
 
-      // registrar giro
+      // registra giro
       await addDoc(collection(db, 'users', user.id, 'rouletteSpins'), {
         prize,
         createdAt: serverTimestamp()
       });
 
-      // registrar transação
+      // registra transação
       await addDoc(collection(db, 'users', user.id, 'transactions'), {
         type: 'roulette',
         amount: prize,
@@ -104,6 +104,7 @@ export function useRoulette() {
         createdAt: serverTimestamp()
       });
 
+      // atualizar estado
       await checkCanSpin();
 
       return { success: true, prize };
@@ -118,6 +119,6 @@ export function useRoulette() {
     loading,
     spin,
     prizes: PRIZES,
-    spinsAvailable
+    girosDisponiveis
   };
 }
