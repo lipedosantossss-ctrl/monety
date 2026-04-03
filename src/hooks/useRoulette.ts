@@ -5,8 +5,7 @@ import {
   serverTimestamp,
   doc,
   updateDoc,
-  increment,
-  getDoc
+  increment
 } from 'firebase/firestore';
 
 import { db } from '../firebase/firebase';
@@ -32,25 +31,20 @@ export function useRoulette() {
   const [girosDisponiveis, setGirosDisponiveis] = useState(0);
 
   useEffect(() => {
+    checkCanSpin();
+  }, [user]);
+
+  // ✅ AGORA USA O AUTHCONTEXT (REALTIME)
+  const checkCanSpin = async () => {
     if (!user) {
+      setGirosDisponiveis(0);
+      setCanSpin(false);
       setLoading(false);
       return;
     }
 
-    checkCanSpin();
-  }, [user]);
-
-  // ✅ verifica giros disponíveis
-  const checkCanSpin = async () => {
-    if (!user) return;
-
     try {
-      const userRef = doc(db, 'users', user.id);
-      const userSnap = await getDoc(userRef);
-
-      const data = userSnap.data();
-
-      const giros = data?.girosRoleta || 0;
+      const giros = user.girosRoleta || 0;
 
       setGirosDisponiveis(giros);
       setCanSpin(giros > 0);
@@ -103,9 +97,6 @@ export function useRoulette() {
         description: 'Prêmio da roleta',
         createdAt: serverTimestamp()
       });
-
-      // atualizar estado
-      await checkCanSpin();
 
       return { success: true, prize };
     } catch (error) {
